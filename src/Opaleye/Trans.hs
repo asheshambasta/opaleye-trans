@@ -3,56 +3,59 @@
 {-# LANGUAGE MultiParamTypeClasses      #-}
 
 module Opaleye.Trans
-    ( OpaleyeT (..)
-    , runOpaleyeT
+  ( OpaleyeT(..)
+  , runOpaleyeT
+  , -- * Transactions
+    Transaction
+  , transaction
+  , run
+  , -- * Queries
+    query
+  , queryFirst
+  , -- * Inserts
+    insert
+  , insertMany
+  , insertReturning
+  , insertReturningFirst
+  , insertManyReturning
+  , -- * Updates
+    update
+  , updateReturning
+  , updateReturningFirst
+  , -- * Deletes
+    delete
+  , -- * Utilities
+    withConn
+  , -- * Reexports
+    liftIO
+  , MonadIO
+  , ask
+  , Int64
+  )
+where
 
-    , -- * Transactions
-      Transaction
-    , transaction
-    , run
+import           Control.Monad.Catch            ( MonadCatch
+                                                , MonadThrow
+                                                )
+import           Control.Monad.IO.Class         ( MonadIO
+                                                , liftIO
+                                                )
+import           Control.Monad.Reader           ( MonadReader
+                                                , ReaderT(..)
+                                                , ask
+                                                )
+import           Control.Monad.Trans            ( MonadTrans(..) )
 
-    , -- * Queries
-      query
-    , queryFirst
+import           Data.Maybe                     ( listToMaybe )
+import           Data.Profunctor.Product.Default
+                                                ( Default )
 
-    , -- * Inserts
-      insert
-    , insertMany
-    , insertReturning
-    , insertReturningFirst
-    , insertManyReturning
+import           Database.PostgreSQL.Simple     ( Connection
+                                                , withTransaction
+                                                )
+import qualified Database.PostgreSQL.Simple    as PSQL
 
-    , -- * Updates
-      update
-    , updateReturning
-    , updateReturningFirst
-
-    , -- * Deletes
-      delete
-
-    , -- * Utilities
-      withConn
-
-    , -- * Reexports
-      liftIO
-    , MonadIO
-    , ask
-    , Int64
-    ) where
-
-import           Control.Monad.IO.Class          (MonadIO, liftIO)
-import           Control.Monad.Reader            (MonadReader, ReaderT (..),
-                                                  ask)
-import           Control.Monad.Trans             (MonadTrans (..))
-import           Control.Monad.Catch             (MonadCatch, MonadThrow)
-
-import           Data.Maybe                      (listToMaybe)
-import           Data.Profunctor.Product.Default (Default)
-
-import           Database.PostgreSQL.Simple      (Connection, withTransaction)
-import qualified Database.PostgreSQL.Simple      as PSQL
-
-import           GHC.Int                         (Int64)
+import           GHC.Int                        ( Int64 )
 
 import           Opaleye
 
@@ -74,13 +77,13 @@ withConn f = ask >>= liftIO . f
 
 
 newtype Transaction a = Transaction { unTransaction :: ReaderT Connection IO a }
-    deriving (Functor, Applicative, Monad, MonadReader Connection)
+    deriving (Functor, Applicative, Monad, MonadReader Connection, MonadIO)
 
 
 -- | Run a postgresql transaction in the 'OpaleyeT' monad
 transaction :: MonadIO m => Transaction a -> OpaleyeT m a
-transaction (Transaction t) = withConn $ \conn ->
-    withTransaction conn (runReaderT t conn)
+transaction (Transaction t) =
+  withConn $ \conn -> withTransaction conn (runReaderT t conn)
 
 
 -- | Execute a query without a literal transaction
@@ -116,21 +119,29 @@ insertMany t ws = withConnIO (\c -> runInsertMany c t ws)
 
 
 -- | Insert a record into a 'Table' with a return value. See 'runInsertReturning'.
-insertReturning :: Default QueryRunner a b => Table w r -> (r -> a) -> w -> Transaction [b]
+insertReturning
+  :: Default QueryRunner a b => Table w r -> (r -> a) -> w -> Transaction [b]
 insertReturning t ret w = withConnIO (\c -> runInsertManyReturning c t [w] ret)
 
 
 -- | Insert a record into a 'Table' with a return value. Retrieve only the first result.
 -- Similar to @'listToMaybe' '<$>' 'insertReturning'@
-insertReturningFirst :: Default QueryRunner a b => Table w r -> (r -> a) -> w -> Transaction (Maybe b)
+insertReturningFirst
+  :: Default QueryRunner a b
+  => Table w r
+  -> (r -> a)
+  -> w
+  -> Transaction (Maybe b)
 insertReturningFirst t ret w = listToMaybe <$> insertReturning t ret w
 
 
 -- | Insert many records into a 'Table' with a return value for each record.
 --
 -- Maybe not worth defining. This almost certainly does the wrong thing.
-insertManyReturning :: Default QueryRunner a b => Table w r -> [w] -> (r -> a) -> Transaction [b]
-insertManyReturning t ws ret = withConnIO (\c -> runInsertManyReturning c t ws ret)
+insertManyReturning
+  :: Default QueryRunner a b => Table w r -> [w] -> (r -> a) -> Transaction [b]
+insertManyReturning t ws ret =
+  withConnIO (\c -> runInsertManyReturning c t ws ret)
 
 
 -- | Update items in a 'Table' where the predicate is true. See 'runUpdate'.
@@ -139,23 +150,27 @@ update t r2w predicate = withConnIO (\c -> runUpdate c t r2w predicate)
 
 
 -- | Update items in a 'Table' with a return value. See 'runUpdateReturning'.
-updateReturning :: Default QueryRunner a b
-                => Table w r
-                -> (r -> w)
-                -> (r -> Column PGBool)
-                -> (r -> a)
-                -> Transaction [b]
-updateReturning table r2w predicate r2returned = withConnIO (\c -> runUpdateReturning c table r2w predicate r2returned)
+updateReturning
+  :: Default QueryRunner a b
+  => Table w r
+  -> (r -> w)
+  -> (r -> Column PGBool)
+  -> (r -> a)
+  -> Transaction [b]
+updateReturning table r2w predicate r2returned =
+  withConnIO (\c -> runUpdateReturning c table r2w predicate r2returned)
 
 
 -- | Update items in a 'Table' with a return value. Similar to @'listToMaybe' '<$>' 'updateReturning'@.
-updateReturningFirst :: Default QueryRunner a b
-                     => Table w r
-                     -> (r -> w)
-                     -> (r -> Column PGBool)
-                     -> (r -> a)
-                     -> Transaction (Maybe b)
-updateReturningFirst table r2w predicate r2returned = listToMaybe <$> updateReturning table r2w predicate r2returned
+updateReturningFirst
+  :: Default QueryRunner a b
+  => Table w r
+  -> (r -> w)
+  -> (r -> Column PGBool)
+  -> (r -> a)
+  -> Transaction (Maybe b)
+updateReturningFirst table r2w predicate r2returned =
+  listToMaybe <$> updateReturning table r2w predicate r2returned
 
 
 -- | Delete items in a 'Table' that satisfy some boolean predicate. See 'runDelete'.

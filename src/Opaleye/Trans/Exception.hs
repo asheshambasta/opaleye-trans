@@ -3,73 +3,76 @@
 {-# LANGUAGE MultiParamTypeClasses      #-}
 
 module Opaleye.Trans.Exception
-    ( OpaleyeT (..)
-    , runOpaleyeT
+  ( OpaleyeT(..)
+  , runOpaleyeT
+  , -- * Transactions
+    Transaction
+  , transaction
+  , run
+  , -- * Queries
+    query
+  , queryFirst
+  , -- * Inserts
+    insert
+  , insertMany
+  , insertReturning
+  , insertReturningFirst
+  , insertManyReturning
+  , -- * Updates
+    update
+  , updateReturning
+  , updateReturningFirst
+  , -- * Deletes
+    delete
+  , -- * Exceptions
+    withExceptOpaleye
+  , withExceptTrans
+  , -- * Utilities
+    withError
+  , withoutError
+  , liftError
+  , withTrans
+  , maybeError
+  , -- * Reexports
+    liftIO
+  , MonadIO
+  , ask
+  , Int64
+  , throwError
+  , catchError
+  )
+where
 
-    , -- * Transactions
-      Transaction
-    , transaction
-    , run
+import           Control.Exception              ( catch
+                                                , throw
+                                                )
+import           Control.Monad.Catch            ( MonadCatch
+                                                , MonadThrow
+                                                )
+import           Control.Monad.Except           ( ExceptT(..)
+                                                , MonadError
+                                                , catchError
+                                                , runExceptT
+                                                , throwError
+                                                , withExceptT
+                                                )
+import           Control.Monad.IO.Class         ( MonadIO
+                                                , liftIO
+                                                )
+import           Control.Monad.Reader           ( MonadReader(..) )
+import           Control.Monad.Trans            ( MonadTrans(..) )
 
-    , -- * Queries
-      query
-    , queryFirst
+import           Data.Profunctor.Product.Default
+                                                ( Default )
 
-    , -- * Inserts
-      insert
-    , insertMany
-    , insertReturning
-    , insertReturningFirst
-    , insertManyReturning
+import           Database.PostgreSQL.Simple     ( Connection )
+import qualified Database.PostgreSQL.Simple    as PSQL
 
-    , -- * Updates
-      update
-    , updateReturning
-    , updateReturningFirst
-
-    , -- * Deletes
-      delete
-
-    , -- * Exceptions
-      withExceptOpaleye
-    , withExceptTrans
-
-    , -- * Utilities
-      withError
-    , withoutError
-    , liftError
-    , withTrans
-    , maybeError
-
-    , -- * Reexports
-      liftIO
-    , MonadIO
-    , ask
-    , Int64
-
-    , throwError
-    , catchError
-    ) where
-
-import           Control.Exception               (catch, throw)
-import           Control.Monad.Except            (ExceptT (..), MonadError,
-                                                  catchError, runExceptT,
-                                                  throwError, withExceptT)
-import           Control.Monad.IO.Class          (MonadIO, liftIO)
-import           Control.Monad.Reader            (MonadReader (..))
-import           Control.Monad.Trans             (MonadTrans (..))
-import           Control.Monad.Catch             (MonadCatch, MonadThrow)
-
-import           Data.Profunctor.Product.Default (Default)
-
-import           Database.PostgreSQL.Simple      (Connection)
-import qualified Database.PostgreSQL.Simple      as PSQL
-
-import           GHC.Int                         (Int64)
+import           GHC.Int                        ( Int64 )
 
 import           Opaleye
 
-import qualified Opaleye.Trans                   as T
+import qualified Opaleye.Trans                 as T
 
 
 newtype OpaleyeT e m a = OpaleyeT { unOpaleyeT :: ExceptT e (T.OpaleyeT m) a }
@@ -97,7 +100,7 @@ withExceptOpaleye f = OpaleyeT . withExceptT f . unOpaleyeT
 
 -- | Just like 'T.Transaction' only with exception handling
 newtype Transaction e a = Transaction { unTransaction :: ExceptT e T.Transaction a }
-    deriving (Functor, Applicative, Monad, MonadReader Connection, MonadError e)
+    deriving (Functor, Applicative, Monad, MonadReader Connection, MonadError e, MonadIO)
 
 
 withExceptTrans :: (e -> e') -> Transaction e a -> Transaction e' a
@@ -112,9 +115,11 @@ withoutError :: Monad m => OpaleyeT e m a -> T.OpaleyeT m (Either e a)
 withoutError = runExceptT . unOpaleyeT
 
 
-liftError :: Monad m
-          => (T.Transaction (Either e a) -> T.OpaleyeT m (Either r b))
-          -> Transaction e a -> OpaleyeT r m b
+liftError
+  :: Monad m
+  => (T.Transaction (Either e a) -> T.OpaleyeT m (Either r b))
+  -> Transaction e a
+  -> OpaleyeT r m b
 liftError f = withError . f . runExceptT . unTransaction
 
 
@@ -157,20 +162,32 @@ insertMany t = withTrans . T.insertMany t
 
 
 -- | Insert a record into a 'Table' with a return value. See 'runInsertReturning'.
-insertReturning :: Default QueryRunner a b => Table w r -> (r -> a) -> w -> Transaction e [b]
+insertReturning
+  :: Default QueryRunner a b => Table w r -> (r -> a) -> w -> Transaction e [b]
 insertReturning t ret = withTrans . T.insertReturning t ret
 
 
 -- | Insert a record into a 'Table' with a return value. Retrieve only the first result.
 -- Similar to @'listToMaybe' '<$>' 'insertReturning'@
-insertReturningFirst :: Default QueryRunner a b => e -> Table w r -> (r -> a) -> w -> Transaction e b
+insertReturningFirst
+  :: Default QueryRunner a b
+  => e
+  -> Table w r
+  -> (r -> a)
+  -> w
+  -> Transaction e b
 insertReturningFirst e t ret w = maybeError (T.insertReturningFirst t ret w) e
 
 
 -- | Insert many records into a 'Table' with a return value for each record.
 --
 -- Maybe not worth defining. This almost certainly does the wrong thing.
-insertManyReturning :: Default QueryRunner a b => Table w r -> [w] -> (r -> a) -> Transaction e [b]
+insertManyReturning
+  :: Default QueryRunner a b
+  => Table w r
+  -> [w]
+  -> (r -> a)
+  -> Transaction e [b]
 insertManyReturning t ws = withTrans . T.insertManyReturning t ws
 
 
@@ -180,24 +197,27 @@ update t r2w = withTrans . T.update t r2w
 
 
 -- | Update items in a 'Table' with a return value. See 'runUpdateReturning'.
-updateReturning :: Default QueryRunner a b
-                => Table w r
-                -> (r -> w)
-                -> (r -> Column PGBool)
-                -> (r -> a)
-                -> Transaction e [b]
+updateReturning
+  :: Default QueryRunner a b
+  => Table w r
+  -> (r -> w)
+  -> (r -> Column PGBool)
+  -> (r -> a)
+  -> Transaction e [b]
 updateReturning t r2w p = withTrans . T.updateReturning t r2w p
 
 
 -- | Update items in a 'Table' with a return value. Similar to @'listToMaybe' '<$>' 'updateReturning'@.
-updateReturningFirst :: Default QueryRunner a b
-                     => e
-                     -> Table w r
-                     -> (r -> w)
-                     -> (r -> Column PGBool)
-                     -> (r -> a)
-                     -> Transaction e b
-updateReturningFirst e t r2w p r2r = maybeError (T.updateReturningFirst t r2w p r2r) e
+updateReturningFirst
+  :: Default QueryRunner a b
+  => e
+  -> Table w r
+  -> (r -> w)
+  -> (r -> Column PGBool)
+  -> (r -> a)
+  -> Transaction e b
+updateReturningFirst e t r2w p r2r =
+  maybeError (T.updateReturningFirst t r2w p r2r) e
 
 
 -- | Delete items in a 'Table' that satisfy some boolean predicate. See 'runDelete'.
